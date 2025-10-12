@@ -116,19 +116,21 @@ except ImportError:
 class RocksmithGuitarMute:
     """Main class for processing Rocksmith PSARC files to remove guitar tracks."""
     
-    def __init__(self, demucs_model: str = "htdemucs_6s", device: str = "auto"):
+    def __init__(self, demucs_model: str = "htdemucs_6s", device: str = "auto", reduce_vocals: int = 100):
         """
         Initialize the processor.
         
         Args:
             demucs_model: Demucs model to use for source separation
             device: Device to use for processing ("cpu", "cuda", or "auto")
+            reduce_vocals: Vocals volume reduction percentage (0-100, 100 = original volume)
         """
         # Apply subprocess patches for silent operation
         patch_subprocess_for_silence()
         
         self.demucs_model = demucs_model
         self.device = self._get_device(device)
+        self.reduce_vocals = reduce_vocals
         self.logger = logging.getLogger(__name__)
         
         # Find project root for tool paths
@@ -405,6 +407,12 @@ class RocksmithGuitarMute:
             
             if sr is None:
                 raise ValueError("Could not determine sample rate from audio files")
+            
+            # Apply vocals volume reduction if specified
+            if self.reduce_vocals < 100 and 'vocals' in stems:
+                vocals_volume_factor = self.reduce_vocals / 100.0
+                stems['vocals'] = stems['vocals'] * vocals_volume_factor
+                self.logger.info(f"Applied vocals volume reduction: {self.reduce_vocals}% ({vocals_volume_factor:.2f}x)")
             
             # For htdemucs_6s model, exclude the guitar stem specifically
             backing_stems = []
@@ -694,7 +702,7 @@ class RocksmithGuitarMute:
             if files_to_process:
                 # Prepare arguments for parallel processing
                 process_args = [
-                    (psarc_file, output_dir, self.demucs_model, self.device, force)
+                    (psarc_file, output_dir, self.demucs_model, self.device, force, self.reduce_vocals)
                     for psarc_file in files_to_process
                 ]
                 
@@ -725,21 +733,21 @@ class RocksmithGuitarMute:
         return processed_files
 
 
-def process_single_psarc_worker(args_tuple: Tuple[Path, Path, str, str, bool]) -> Optional[Path]:
+def process_single_psarc_worker(args_tuple: Tuple[Path, Path, str, str, bool, int]) -> Optional[Path]:
     """
     Worker function for parallel processing of PSARC files.
     
     Args:
-        args_tuple: Tuple containing (psarc_path, output_dir, demucs_model, device, force)
+        args_tuple: Tuple containing (psarc_path, output_dir, demucs_model, device, force, reduce_vocals)
         
     Returns:
         Path to processed file or None if skipped/failed
     """
-    psarc_path, output_dir, demucs_model, device, force = args_tuple
+    psarc_path, output_dir, demucs_model, device, force, reduce_vocals = args_tuple
     
     try:
         # Create a new processor instance for this worker
-        processor = RocksmithGuitarMute(demucs_model=demucs_model, device=device)
+        processor = RocksmithGuitarMute(demucs_model=demucs_model, device=device, reduce_vocals=reduce_vocals)
         return processor.process_psarc_file(psarc_path, output_dir, force=force)
     except Exception as e:
         logging.getLogger(__name__).error(f"Failed to process {psarc_path}: {e}")
@@ -973,6 +981,12 @@ Examples:
   # Force reprocessing with 4 workers
   python rocksmith_guitar_mute.py input_directory/ output/ --force --workers 4
   
+  # Reduce vocals to 50% volume
+  python rocksmith_guitar_mute.py song.psarc output/ --reduce-vocals 50
+  
+  # Mute vocals completely
+  python rocksmith_guitar_mute.py song.psarc output/ --reduce-vocals 0
+  
   # Skip existing files (default behavior)
   python rocksmith_guitar_mute.py input_directory/ output/ --workers 8
         """
@@ -1022,6 +1036,15 @@ Examples:
         help="Number of parallel workers (default: number of CPU cores)"
     )
     
+    parser.add_argument(
+        "--reduce-vocals",
+        type=int,
+        choices=range(0, 101),
+        metavar="[0-100]",
+        default=100,
+        help="Reduce vocals volume (0 = mute, 100 = original volume, default: 100)"
+    )
+    
     args = parser.parse_args()
     
     # Setup logging first thing
@@ -1046,7 +1069,8 @@ Examples:
         # Initialize processor
         processor = RocksmithGuitarMute(
             demucs_model=args.model,
-            device=args.device
+            device=args.device,
+            reduce_vocals=args.reduce_vocals
         )
         
         # Process files
