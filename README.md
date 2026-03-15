@@ -170,6 +170,29 @@ pip install torch torchaudio demucs soundfile numpy
 
 ## Usage
 
+### Graphical Interface (GUI)
+
+A dark-themed GUI is available for users who prefer a visual interface over the command line.
+
+**Launch the GUI:**
+```bash
+python gui/launch_gui.py
+```
+
+**Features:**
+- File/folder browser for selecting input PSARC files and output directory
+- Checkbox selection for all 6 stem mix variants (with Select All / Deselect All)
+- Demucs model and device (CPU/GPU) selection
+- Vocals volume reduction slider (0-100%)
+- Real-time progress bar tracking per-variant output
+- Activity log with live processing updates
+- Pause and cancel support during processing
+
+**Additional dependency for GUI:**
+```bash
+pip install Pillow
+```
+
 ### Command Line Interface
 
 Basic usage:
