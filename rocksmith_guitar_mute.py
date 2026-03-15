@@ -762,6 +762,76 @@ class RocksmithGuitarMute:
             )
             # The Welder uses the directory name as the PSARC name, so we don't rename it
 
+        # Step 6: Patch .bnk files
+        # a) Update the prefetch DATA section to match the new mixed .wem content, so
+        #    the first bytes Wwise plays from the prefetch buffer are the mixed audio
+        #    rather than the original (which still has excluded stems).
+        # b) Update the preview bank's HIRC event ID. Rocksmith derives the preview event
+        #    name as Play_{DLCKey}_Preview, so we recompute its FNV-1 hash for the new key.
+        import struct
+
+        def wwise_fnv1(s: str) -> int:
+            h = 2166136261
+            for c in s.lower():
+                h = ((h * 16777619) ^ ord(c)) & 0xFFFFFFFF
+            return h
+
+        for bnk_file in song_dir.rglob("*.bnk"):
+            bnk_data = bytearray(bnk_file.read_bytes())
+
+            # a) Update embedded prefetch DATA to match first bytes of new mixed .wem
+            didx_media = {}  # {media_id: (offset_in_data, size)}
+            data_section_offset = None
+            pos = 0
+            while pos < len(bnk_data) - 8:
+                tag = bnk_data[pos:pos+4].decode('ascii', errors='replace')
+                chunk_len = struct.unpack_from('<I', bnk_data, pos+4)[0]
+                if tag == 'DIDX':
+                    n_entries = chunk_len // 12
+                    for i in range(n_entries):
+                        mid = struct.unpack_from('<I', bnk_data, pos+8+i*12)[0]
+                        offset = struct.unpack_from('<I', bnk_data, pos+12+i*12)[0]
+                        size = struct.unpack_from('<I', bnk_data, pos+16+i*12)[0]
+                        didx_media[mid] = (offset, size)
+                elif tag == 'DATA':
+                    data_section_offset = pos + 8  # skip tag+len
+                pos += 8 + chunk_len
+
+            if didx_media and data_section_offset is not None:
+                for media_id, (offset, size) in didx_media.items():
+                    wem_path = bnk_file.parent / f"{media_id}.wem"
+                    if wem_path.exists():
+                        new_wem_bytes = wem_path.read_bytes()
+                        prefetch_bytes = new_wem_bytes[:size]
+                        if len(prefetch_bytes) == size:
+                            start = data_section_offset + offset
+                            bnk_data[start:start+size] = prefetch_bytes
+
+            # b) Update preview bank HIRC event ID
+            if "_preview" in bnk_file.name:
+                old_event_id = wwise_fnv1(f"Play_{original_key_mixed}_Preview")
+                new_event_id = wwise_fnv1(f"Play_{new_key_mixed}_Preview")
+                pos = 0
+                while pos < len(bnk_data) - 8:
+                    tag = bnk_data[pos:pos+4].decode('ascii', errors='replace')
+                    chunk_len = struct.unpack_from('<I', bnk_data, pos+4)[0]
+                    if tag == 'HIRC':
+                        n = struct.unpack_from('<I', bnk_data, pos+8)[0]
+                        opos = pos + 12
+                        for _ in range(n):
+                            obj_type = bnk_data[opos]
+                            obj_len = struct.unpack_from('<I', bnk_data, opos+1)[0]
+                            obj_id = struct.unpack_from('<I', bnk_data, opos+5)[0]
+                            if obj_type == 4 and obj_id == old_event_id:
+                                struct.pack_into('<I', bnk_data, opos+5, new_event_id)
+                                self.logger.debug(
+                                    f"Updated preview event ID: 0x{old_event_id:08x} -> 0x{new_event_id:08x}"
+                                )
+                            opos += 5 + obj_len
+                    pos += 8 + chunk_len
+
+            bnk_file.write_bytes(bytes(bnk_data))
+
         self.logger.info(f"Variant uniqueness applied: {variant_name}")
 
     def _get_variant_output_path(self, psarc_path: Path, output_dir: Path, variant: str) -> Path:
