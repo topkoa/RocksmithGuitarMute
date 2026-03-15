@@ -466,7 +466,11 @@ class RocksmithGuitarMute:
                 selected.append(audio)
                 self.logger.debug(f"Including stem: {stem_name}")
             else:
-                self.logger.debug(f"Stem not available, skipping: {stem_name}")
+                self.logger.warning(
+                    f"Stem '{stem_name}' not available from model '{self.demucs_model}'. "
+                    f"Available stems: {list(stems.keys())}. "
+                    f"Use 'htdemucs_6s' model for guitar/piano separation."
+                )
 
         if not selected:
             raise ValueError(f"No matching stems found for: {include_stems}")
@@ -785,6 +789,22 @@ class RocksmithGuitarMute:
         self.logger.info(f"Starting PSARC processing: {psarc_path}")
         self.logger.info(f"Variants to produce: {', '.join(variants)}")
         self.logger.debug(f"Input file size: {psarc_path.stat().st_size} bytes")
+
+        # Warn if model may not support required stems
+        six_stem_models = {"htdemucs_6s"}
+        if self.demucs_model not in six_stem_models:
+            needs_6s = set()
+            for v in variants:
+                config = VARIANT_CONFIGS[v]
+                for s in config["include_stems"]:
+                    if s in ("guitar", "piano"):
+                        needs_6s.add(s)
+            if needs_6s:
+                self.logger.warning(
+                    f"Model '{self.demucs_model}' does not separate {needs_6s} as individual stems. "
+                    f"Variants referencing these stems will produce incorrect results. "
+                    f"Use 'htdemucs_6s' for proper guitar/piano separation."
+                )
 
         output_dir.mkdir(parents=True, exist_ok=True)
 
