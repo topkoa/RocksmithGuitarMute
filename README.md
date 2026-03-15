@@ -1,14 +1,29 @@
 # RockSmithGuitarMute
 
-A tool for processing Rocksmith 2014 PSARC files to remove guitar tracks from audio using AI-powered source separation.
+A tool for processing Rocksmith 2014 PSARC files to create multiple stem-mix variants using AI-powered source separation.
 
 ## Overview
 
-This project automates the process of unpacking Rocksmith 2014 PSARC files, extracting audio tracks, removing guitar parts using AI source separation, and repacking the modified files. This is useful for creating backing tracks or practicing with different instrumental arrangements.
+This project automates the process of unpacking Rocksmith 2014 PSARC files, extracting audio tracks, separating instruments using AI source separation, and repacking modified files with different stem combinations. Produce up to 6 variants per song — no guitar, no vocals, drums only, and more — each with unique identifiers so they can all coexist in Rocksmith simultaneously.
 
 ## Features
 
-### ✨ **Performance Optimizations**
+### Multi-Variant Output
+Produce multiple versions of each song in a single run:
+
+| Variant | Description | Included Stems |
+|---------|-------------|---------------|
+| `no_guitar` | Backing track without guitar (default) | drums, bass, vocals, piano, other |
+| `no_vocals` | Instrumental without vocals | drums, bass, piano, other, guitar |
+| `no_bass` | Mix without bass | drums, vocals, piano, other, guitar |
+| `no_guitar_no_bass` | Mix without guitar or bass | drums, vocals, piano, other |
+| `drums_only` | Isolated drums | drums |
+| `vocals_and_drums` | Only vocals and drums | vocals, drums |
+
+- **Unique Identifiers**: Each variant gets its own DLCKey, PersistentID, and SongName so all variants can be loaded in Rocksmith at the same time without collisions
+- **Efficient Processing**: Demucs AI separation runs only **once** per input file — stems are then remixed cheaply for each variant
+
+### Performance Optimizations
 - **Automatic Output Checking**: Skips files that have already been processed (unless `--force` is used)
 - **Parallel Processing**: Utilizes all CPU cores for maximum performance (one file per core)
 - **Configurable Workers**: Control the number of parallel workers with `--workers` option
@@ -45,12 +60,12 @@ Audio conversion and extraction:
 - Handles Wwise audio conversion
 - Maintains audio quality and metadata
 
-### 3. Remove Guitar Track
+### 3. Separate & Remix Stems
 Using **Demucs** (v4) - a state-of-the-art AI music source separation model:
-- Separates audio into stems: drums, bass, vocals, and other instruments
-- Uses Hybrid Transformer architecture for high-quality separation
+- Separates audio into 6 stems: drums, bass, vocals, piano, guitar, and other
+- Uses Hybrid Transformer architecture (htdemucs_6s) for high-quality separation
 - Achieves 9.00+ dB SDR (Signal-to-Distortion Ratio) on test sets
-- Removes guitar/lead instrument while preserving other musical elements
+- Remixes stems into one or more variants based on `--variants` selection
 
 ### 4. Repack PSARC
 Reconstruct the PSARC file with the modified audio:
@@ -95,8 +110,10 @@ A collection of Python scripts for Rocksmith 2014:
 
 ### System Requirements
 - **Windows** (this tool only works on Windows)
-- **Wwise v2013.2.10 build 4884** - Required for audio conversion
+- **Wwise v2013.2.10 build 4884** - Required for audio conversion (newer versions are not compatible)
   - Download from: https://ignition4.customsforge.com/tools/wwise
+- **FFmpeg** - Required for audio format conversion
+  - Install via Chocolatey: `choco install ffmpeg`
 - Python 3.8+ (for Demucs and main application)
 - CUDA-compatible GPU (recommended for faster processing)
 - Git (for cloning with submodules)
@@ -130,17 +147,23 @@ pip install torch torchaudio demucs soundfile numpy
    git submodule update --init --recursive
    ```
 
-2. **Install Python dependencies**:
+2. **Install PyTorch with CUDA** (if you have an NVIDIA GPU):
+   ```bash
+   pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu124
+   ```
+   Skip this step if you don't have an NVIDIA GPU — the next step will install CPU-only PyTorch.
+
+3. **Install Python dependencies**:
    ```bash
    pip install -r requirements.txt
    ```
 
-3. **Install the package** (optional, for development):
+4. **Install the package** (optional, for development):
    ```bash
    pip install -e .
    ```
 
-4. **Test the installation**:
+5. **Test the installation**:
    ```bash
    python tests/test_import.py
    ```
@@ -156,14 +179,24 @@ python rocksmith_guitar_mute.py <input_path> <output_dir> [options]
 
 ### Examples
 
-**Process a single PSARC file**:
+**Process a single PSARC file** (default: no guitar):
 ```bash
-python rocksmith_guitar_mute.py sample/2minutes_p.psarc output/
+python rocksmith_guitar_mute.py song.psarc output/
+```
+
+**Generate all 6 variants**:
+```bash
+python rocksmith_guitar_mute.py song.psarc output/ --variants all
+```
+
+**Generate specific variants**:
+```bash
+python rocksmith_guitar_mute.py song.psarc output/ --variants no_vocals drums_only
 ```
 
 **Process all PSARC files in a directory**:
 ```bash
-python rocksmith_guitar_mute.py input_directory/ output/
+python rocksmith_guitar_mute.py input_directory/ output/ --variants all
 ```
 
 **Use specific Demucs model and GPU**:
@@ -180,10 +213,15 @@ python rocksmith_guitar_mute.py song.psarc output/ --verbose
 
 - `input_path`: Path to PSARC file or directory containing PSARC files
 - `output_dir`: Directory where processed files will be saved
-- `--model`: Demucs model to use (default: htdemucs)
-  - Options: `htdemucs`, `htdemucs_ft`, `mdx_extra`, `mdx_extra_q`, `mdx_q`, `hdemucs_mmi`
+- `--variants`: Stem mix variants to produce (default: `no_guitar`)
+  - Options: `no_guitar`, `no_vocals`, `no_bass`, `no_guitar_no_bass`, `drums_only`, `vocals_and_drums`, `all`
+- `--model`: Demucs model to use (default: htdemucs_6s)
+  - Options: `htdemucs_6s`, `htdemucs`, `htdemucs_ft`, `mdx_extra`, `mdx_extra_q`
 - `--device`: Processing device (default: auto)
   - Options: `auto`, `cpu`, `cuda`
+- `--reduce-vocals`: Vocals volume percentage, 0-100 (default: 100)
+- `--workers`: Number of parallel workers (default: number of CPU cores)
+- `--force`: Process files even if output already exists
 - `--verbose`: Enable detailed logging
 
 ### Processing Pipeline
@@ -193,14 +231,11 @@ The tool automatically performs these steps:
 1. **Unpack PSARC**: Extracts all files from the Rocksmith 2014 archive
 2. **Find Audio**: Locates WEM, OGG, and WAV audio files
 3. **Convert Format**: Converts WEM files to WAV for processing
-4. **Separate Sources**: Uses Demucs AI to separate instruments:
-   - Drums
-   - Bass  
-   - Vocals
-   - Other (typically guitar/lead instruments)
-5. **Create Backing Track**: Combines all stems except guitar
-6. **Replace Audio**: Converts processed audio back to original format
-7. **Repack PSARC**: Creates new archive with modified audio
+4. **Separate Sources**: Uses Demucs AI to separate into 6 stems (drums, bass, vocals, piano, guitar, other)
+5. **Remix Variants**: For each requested variant, combines the appropriate stems
+6. **Unique Metadata**: Updates DLCKey, PersistentID, and SongName per variant
+7. **Replace Audio**: Converts processed audio back to original format
+8. **Repack PSARC**: Creates new archive(s) with modified audio
 
 ### Configuration
 
