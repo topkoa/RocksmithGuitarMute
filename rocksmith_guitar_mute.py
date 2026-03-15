@@ -122,8 +122,29 @@ VARIANT_CONFIGS = {
     "vocals_and_drums": {"suffix": "_vocals_and_drums", "include_stems": ["vocals", "drums"]},
     "no_guitar_no_bass_no_vocals": {"suffix": "_no_guitar_no_bass_no_vocals", "include_stems": ["drums", "piano", "other"]},
 }
+ALL_STEMS = ["drums", "bass", "vocals", "piano", "guitar", "other"]
 DEFAULT_VARIANTS = ["no_guitar"]
 ALL_VARIANTS = list(VARIANT_CONFIGS.keys())
+
+
+def parse_custom_variant(spec: str) -> tuple:
+    """Parse a custom variant spec like 'my_mix:drums,vocals,piano'.
+
+    Returns (name, config_dict) or raises ValueError.
+    """
+    if ":" not in spec:
+        raise ValueError(f"Custom variant must be in 'name:stem1,stem2,...' format, got: {spec}")
+    name, stems_str = spec.split(":", 1)
+    name = name.strip()
+    if not name:
+        raise ValueError("Custom variant name cannot be empty")
+    stems = [s.strip() for s in stems_str.split(",") if s.strip()]
+    invalid = [s for s in stems if s not in ALL_STEMS]
+    if invalid:
+        raise ValueError(f"Unknown stems: {invalid}. Valid stems: {ALL_STEMS}")
+    if not stems:
+        raise ValueError("Custom variant must include at least one stem")
+    return name, {"suffix": f"_{name}", "include_stems": stems}
 
 
 class RocksmithGuitarMute:
@@ -1263,13 +1284,38 @@ Examples:
              "Available: " + ", ".join(VARIANT_CONFIGS.keys())
     )
 
+    parser.add_argument(
+        "--custom",
+        action="append",
+        metavar="NAME:STEMS",
+        default=[],
+        help="Custom variant as 'name:stem1,stem2,...'. Can be repeated. "
+             "Valid stems: " + ", ".join(ALL_STEMS)
+    )
+
     args = parser.parse_args()
 
+    # Parse custom variants and add to VARIANT_CONFIGS
+    for spec in args.custom:
+        name, config = parse_custom_variant(spec)
+        if name in VARIANT_CONFIGS:
+            print(f"[WARN] Custom variant '{name}' overrides built-in variant")
+        VARIANT_CONFIGS[name] = config
+
     # Resolve variants
-    if args.variants is None:
+    if args.variants is None and not args.custom:
         args.variants = DEFAULT_VARIANTS
-    elif "all" in args.variants:
+    elif args.variants is None:
+        args.variants = []
+
+    if args.variants and "all" in args.variants:
         args.variants = ALL_VARIANTS
+
+    # Add custom variant names to the variants list
+    for spec in args.custom:
+        name = spec.split(":", 1)[0].strip()
+        if name not in args.variants:
+            args.variants.append(name)
     
     # Setup logging first thing
     setup_logging(args.verbose)

@@ -182,7 +182,8 @@ python gui/launch_gui.py
 
 **Features:**
 - File/folder browser for selecting input PSARC files and output directory
-- Checkbox selection for all 6 stem mix variants (with Select All / Deselect All)
+- Checkbox selection for all 7 built-in stem mix variants (with Select All / Deselect All)
+- Custom variant builder: name your own mix and pick which stems to include
 - Demucs model and device (CPU/GPU) selection
 - Vocals volume reduction slider (0-100%)
 - Real-time progress bar tracking per-variant output
@@ -228,6 +229,16 @@ python rocksmith_guitar_mute.py input_directory/ output/ --variants all
 python rocksmith_guitar_mute.py song.psarc output/ --model htdemucs --device cuda
 ```
 
+**Create a custom variant** (only drums and vocals):
+```bash
+python rocksmith_guitar_mute.py song.psarc output/ --custom "my_mix:drums,vocals"
+```
+
+**Mix built-in and custom variants**:
+```bash
+python rocksmith_guitar_mute.py song.psarc output/ --variants no_guitar --custom "rhythm_section:drums,bass" --custom "keys_only:piano,other"
+```
+
 **Enable verbose logging**:
 ```bash
 python rocksmith_guitar_mute.py song.psarc output/ --verbose
@@ -243,6 +254,8 @@ python rocksmith_guitar_mute.py song.psarc output/ --verbose
   - Options: `htdemucs_6s`, `htdemucs`, `htdemucs_ft`, `mdx_extra`, `mdx_extra_q`
 - `--device`: Processing device (default: auto)
   - Options: `auto`, `cpu`, `cuda`
+- `--custom`: Custom variant as `name:stem1,stem2,...` (can be repeated)
+  - Valid stems: `drums`, `bass`, `vocals`, `piano`, `guitar`, `other`
 - `--reduce-vocals`: Vocals volume percentage, 0-100 (default: 100)
 - `--workers`: Number of parallel workers (default: number of CPU cores)
 - `--force`: Process files even if output already exists

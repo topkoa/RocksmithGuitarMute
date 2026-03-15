@@ -52,7 +52,7 @@ if sys.platform == "win32":
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from rocksmith_guitar_mute import RocksmithGuitarMute, setup_logging
+from rocksmith_guitar_mute import RocksmithGuitarMute, setup_logging, VARIANT_CONFIGS
 
 
 def patch_subprocess_for_silence():
@@ -254,6 +254,9 @@ class RocksmithGuitarMuteGUI:
             self.variant_vars = {}
             for variant_name in ["no_guitar", "no_vocals", "no_bass", "no_guitar_no_bass", "no_guitar_no_bass_no_vocals", "drums_only", "vocals_and_drums"]:
                 self.variant_vars[variant_name] = tk.BooleanVar(value=(variant_name == "no_guitar"))
+
+            # Custom variants: list of (name, [stems]) tuples
+            self.custom_variants = []
 
             # Processing state
             self.processing = False
@@ -752,6 +755,53 @@ class RocksmithGuitarMuteGUI:
         deselect_all_btn = self.create_button(variant_btn_frame, "Deselect All", self.deselect_all_variants)
         deselect_all_btn.pack(side=tk.LEFT)
 
+        # === Custom Variant Section ===
+        custom_frame = self.create_section_frame(main_frame, "Custom Variant Builder")
+        custom_frame.pack(fill=tk.X, pady=(0, 20))
+
+        custom_content = tk.Frame(custom_frame, bg='#2d2d2d')
+        custom_content.pack(fill=tk.BOTH, expand=True, padx=20, pady=15)
+
+        # Name field
+        name_row = tk.Frame(custom_content, bg='#2d2d2d')
+        name_row.pack(fill=tk.X, pady=(0, 10))
+
+        tk.Label(name_row, text="Name:",
+                font=("Segoe UI", 10), fg='#ffffff', bg='#2d2d2d').pack(side=tk.LEFT, padx=(0, 10))
+
+        self.custom_name_var = tk.StringVar()
+        self.custom_name_entry = tk.Entry(name_row, textvariable=self.custom_name_var,
+                                          bg='#404040', fg='#ffffff', insertbackground='#ffffff',
+                                          relief='solid', bd=1, font=("Segoe UI", 10), width=25)
+        self.custom_name_entry.pack(side=tk.LEFT, padx=(0, 20))
+
+        # Stem checkboxes in a row
+        stems_row = tk.Frame(custom_content, bg='#2d2d2d')
+        stems_row.pack(fill=tk.X, pady=(0, 10))
+
+        tk.Label(stems_row, text="Include:",
+                font=("Segoe UI", 10), fg='#ffffff', bg='#2d2d2d').pack(side=tk.LEFT, padx=(0, 10))
+
+        self.custom_stem_vars = {}
+        for stem in ["drums", "bass", "vocals", "piano", "guitar", "other"]:
+            var = tk.BooleanVar(value=False)
+            self.custom_stem_vars[stem] = var
+            cb = tk.Checkbutton(stems_row, text=stem, variable=var,
+                               bg='#2d2d2d', fg='#ffffff', selectcolor='#404040',
+                               font=("Segoe UI", 9), activebackground='#2d2d2d', activeforeground='#ffffff')
+            cb.pack(side=tk.LEFT, padx=(0, 10))
+
+        # Add button
+        add_row = tk.Frame(custom_content, bg='#2d2d2d')
+        add_row.pack(fill=tk.X, pady=(0, 5))
+
+        add_btn = self.create_button(add_row, "Add Custom Variant", self.add_custom_variant)
+        add_btn.pack(side=tk.LEFT)
+
+        # List of added custom variants
+        self.custom_list_frame = tk.Frame(custom_content, bg='#2d2d2d')
+        self.custom_list_frame.pack(fill=tk.X)
+
         # === Progress Section ===
         progress_frame = self.create_section_frame(main_frame, "Progress")
         progress_frame.pack(fill=tk.X, pady=(0, 20))
@@ -933,9 +983,63 @@ class RocksmithGuitarMuteGUI:
         for var in self.variant_vars.values():
             var.set(False)
 
+    def add_custom_variant(self):
+        """Add a custom variant from the builder fields."""
+        name = self.custom_name_var.get().strip()
+        if not name:
+            messagebox.showerror("Error", "Please enter a name for the custom variant.")
+            return
+
+        # Sanitize name: replace spaces with underscores, remove special chars
+        import re
+        name = re.sub(r'[^a-zA-Z0-9_]', '_', name).lower()
+
+        stems = [s for s, var in self.custom_stem_vars.items() if var.get()]
+        if not stems:
+            messagebox.showerror("Error", "Please select at least one stem.")
+            return
+
+        # Check for duplicate names
+        existing = [n for n, _ in self.custom_variants]
+        if name in existing or name in self.variant_vars:
+            messagebox.showerror("Error", f"Variant '{name}' already exists.")
+            return
+
+        self.custom_variants.append((name, stems))
+        self._refresh_custom_list()
+
+        # Clear inputs
+        self.custom_name_var.set("")
+        for var in self.custom_stem_vars.values():
+            var.set(False)
+
+    def remove_custom_variant(self, name):
+        """Remove a custom variant by name."""
+        self.custom_variants = [(n, s) for n, s in self.custom_variants if n != name]
+        self._refresh_custom_list()
+
+    def _refresh_custom_list(self):
+        """Redraw the custom variants list."""
+        for widget in self.custom_list_frame.winfo_children():
+            widget.destroy()
+
+        for name, stems in self.custom_variants:
+            row = tk.Frame(self.custom_list_frame, bg='#2d2d2d')
+            row.pack(fill=tk.X, pady=2)
+
+            tk.Label(row, text=f"{name}  ({', '.join(stems)})",
+                    font=("Segoe UI", 9), fg='#cccccc', bg='#2d2d2d').pack(side=tk.LEFT, padx=(0, 10))
+
+            remove_btn = tk.Button(row, text="X", command=lambda n=name: self.remove_custom_variant(n),
+                                   bg='#602020', fg='#ffffff', activebackground='#803030',
+                                   activeforeground='#ffffff', relief='solid', bd=1,
+                                   font=("Segoe UI", 8, "bold"), padx=5, pady=0)
+            remove_btn.pack(side=tk.LEFT)
+
     def get_selected_variants(self) -> list:
-        """Return list of selected variant names."""
-        return [name for name, var in self.variant_vars.items() if var.get()]
+        """Return list of selected variant names (built-in + custom)."""
+        return [name for name, var in self.variant_vars.items() if var.get()] + \
+               [name for name, _ in self.custom_variants]
 
     def validate_inputs(self) -> bool:
         """Validate user inputs."""
@@ -1048,6 +1152,10 @@ class RocksmithGuitarMuteGUI:
                 device=self.device_var.get(),
                 reduce_vocals=self.reduce_vocals_var.get()
             )
+
+            # Register custom variants in VARIANT_CONFIGS
+            for name, stems in self.custom_variants:
+                VARIANT_CONFIGS[name] = {"suffix": f"_{name}", "include_stems": stems}
 
             selected_variants = self.get_selected_variants()
             self.message_queue.put(('log', f"Selected variants: {', '.join(selected_variants)}"))
