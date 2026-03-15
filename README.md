@@ -115,22 +115,24 @@ A collection of Python scripts for Rocksmith 2014:
   - Download from: https://ignition4.customsforge.com/tools/wwise
 - **FFmpeg** - Required for audio format conversion
   - Install via Chocolatey: `choco install ffmpeg`
-- Python 3.8+ (for Demucs and main application)
+- **Python 3.10–3.12** — Python 3.12 is recommended. Python 3.13+ is not yet supported due to incompatibilities with torch and diffq. Python 3.8/3.9 are end-of-life.
 - CUDA-compatible GPU (recommended for faster processing)
 - Git (for cloning with submodules)
 
 ### Python Dependencies
 ```bash
 pip install -r requirements.txt
-# Or manually:
-pip install torch torchaudio demucs soundfile numpy
+# Or manually (note: torch/torchaudio must be pinned — see note below):
+pip install torch==2.6.0 torchaudio==2.6.0 demucs soundfile numpy
 ```
+
+> **Note on torch/torchaudio versions:** `torch` and `torchaudio` are pinned to `2.6.0`. torchaudio 2.7+ switched its default audio backend to `torchcodec`, which is not available on Windows. Do not upgrade these without testing.
 
 ## Installation
 
 ### Prerequisites
 
-1. **Python 3.8+** with pip
+1. **Python 3.12** (recommended) — download from [python.org](https://python.org). During install, check **"Add Python to PATH"**. Python 3.13+ is not supported.
 2. **Git** (to clone the repository with submodules)
 
 ### Setup
@@ -140,7 +142,7 @@ pip install torch torchaudio demucs soundfile numpy
    git clone --recursive <repository-url>
    cd RockSmithGuitarMute
    ```
-   
+
    Or if you already cloned without `--recursive`:
    ```bash
    git clone <repository-url>
@@ -148,23 +150,30 @@ pip install torch torchaudio demucs soundfile numpy
    git submodule update --init --recursive
    ```
 
-2. **Install PyTorch with CUDA** (if you have an NVIDIA GPU):
+2. **Create and activate a virtual environment** (strongly recommended):
    ```bash
-   pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu124
+   python -m venv venv
+   venv\Scripts\activate
+   ```
+   You should see `(venv)` in your prompt. All subsequent commands should be run inside this environment.
+
+3. **Install PyTorch with CUDA** (if you have an NVIDIA GPU):
+   ```bash
+   pip install torch==2.6.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu124
    ```
    Skip this step if you don't have an NVIDIA GPU — the next step will install CPU-only PyTorch.
 
-3. **Install Python dependencies**:
+4. **Install Python dependencies**:
    ```bash
    pip install -r requirements.txt
    ```
 
-4. **Install the package** (optional, for development):
+5. **Install the package** (optional, for development):
    ```bash
    pip install -e .
    ```
 
-5. **Test the installation**:
+6. **Test the installation**:
    ```bash
    python tests/test_import.py
    ```
