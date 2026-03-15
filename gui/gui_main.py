@@ -252,7 +252,7 @@ class RocksmithGuitarMuteGUI:
 
             # Variant selection variables
             self.variant_vars = {}
-            for variant_name in ["no_guitar", "no_vocals", "no_bass", "no_guitar_no_bass", "drums_only", "vocals_and_drums"]:
+            for variant_name in ["no_guitar", "no_vocals", "no_bass", "no_guitar_no_bass", "no_guitar_no_bass_no_vocals", "drums_only", "vocals_and_drums"]:
                 self.variant_vars[variant_name] = tk.BooleanVar(value=(variant_name == "no_guitar"))
 
             # Processing state
@@ -720,6 +720,7 @@ class RocksmithGuitarMuteGUI:
             "no_vocals": "No Vocals  (drums, bass, piano, other, guitar)",
             "no_bass": "No Bass  (drums, vocals, piano, other, guitar)",
             "no_guitar_no_bass": "No Guitar + No Bass  (drums, vocals, piano, other)",
+            "no_guitar_no_bass_no_vocals": "No Guitar + No Bass + No Vocals  (drums, piano, other)",
             "drums_only": "Drums Only  (drums)",
             "vocals_and_drums": "Vocals + Drums  (vocals, drums)",
         }

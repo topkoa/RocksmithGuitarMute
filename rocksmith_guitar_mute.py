@@ -120,6 +120,7 @@ VARIANT_CONFIGS = {
     "no_bass": {"suffix": "_no_bass", "include_stems": ["drums", "vocals", "piano", "other", "guitar"]},
     "no_guitar_no_bass": {"suffix": "_no_guitar_no_bass", "include_stems": ["drums", "vocals", "piano", "other"]},
     "vocals_and_drums": {"suffix": "_vocals_and_drums", "include_stems": ["vocals", "drums"]},
+    "no_guitar_no_bass_no_vocals": {"suffix": "_no_guitar_no_bass_no_vocals", "include_stems": ["drums", "piano", "other"]},
 }
 DEFAULT_VARIANTS = ["no_guitar"]
 ALL_VARIANTS = list(VARIANT_CONFIGS.keys())

@@ -4,7 +4,7 @@ A tool for processing Rocksmith 2014 PSARC files to create multiple stem-mix var
 
 ## Overview
 
-This project automates the process of unpacking Rocksmith 2014 PSARC files, extracting audio tracks, separating instruments using AI source separation, and repacking modified files with different stem combinations. Produce up to 6 variants per song — no guitar, no vocals, drums only, and more — each with unique identifiers so they can all coexist in Rocksmith simultaneously.
+This project automates the process of unpacking Rocksmith 2014 PSARC files, extracting audio tracks, separating instruments using AI source separation, and repacking modified files with different stem combinations. Produce up to 7 variants per song — no guitar, no vocals, drums only, and more — each with unique identifiers so they can all coexist in Rocksmith simultaneously.
 
 ## Features
 
@@ -17,6 +17,7 @@ Produce multiple versions of each song in a single run:
 | `no_vocals` | Instrumental without vocals | drums, bass, piano, other, guitar |
 | `no_bass` | Mix without bass | drums, vocals, piano, other, guitar |
 | `no_guitar_no_bass` | Mix without guitar or bass | drums, vocals, piano, other |
+| `no_guitar_no_bass_no_vocals` | Drums + keys backing only | drums, piano, other |
 | `drums_only` | Isolated drums | drums |
 | `vocals_and_drums` | Only vocals and drums | vocals, drums |
 
@@ -207,7 +208,7 @@ python rocksmith_guitar_mute.py <input_path> <output_dir> [options]
 python rocksmith_guitar_mute.py song.psarc output/
 ```
 
-**Generate all 6 variants**:
+**Generate all 7 variants**:
 ```bash
 python rocksmith_guitar_mute.py song.psarc output/ --variants all
 ```
