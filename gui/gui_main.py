@@ -1070,29 +1070,31 @@ class RocksmithGuitarMuteGUI:
                 self.message_queue.put(('status', "No files to process"))
                 return
             
-            total_files = len(files_to_process)
-            self.message_queue.put(('log', f"Processing {total_files} file(s)"))
-            
+            num_inputs = len(files_to_process)
+            num_variants = len(selected_variants)
+            total_outputs = num_inputs * num_variants
+            self.message_queue.put(('log', f"Processing {num_inputs} file(s) x {num_variants} variant(s) = {total_outputs} expected output(s)"))
+
             processed_count = 0
-            
+
             for i, psarc_file in enumerate(files_to_process):
                 # Check for cancellation at the start of each file
                 if self.cancelled or self.shutdown_requested:
                     self.message_queue.put(('log', "Processing cancelled"))
                     break
-                
+
                 # Pause handling
                 while self.paused and not self.cancelled and not self.shutdown_requested:
                     threading.Event().wait(0.1)
-                
+
                 # Check again after pause
                 if self.cancelled or self.shutdown_requested:
                     break
-                
+
                 # Status update
-                self.message_queue.put(('status', f"Processing {psarc_file.name} ({i+1}/{total_files})"))
-                self.message_queue.put(('progress', (i / total_files) * 100))
-                
+                self.message_queue.put(('status', f"Processing {psarc_file.name} ({i+1}/{num_inputs}) - {processed_count}/{total_outputs} outputs complete"))
+                self.message_queue.put(('progress', (processed_count / total_outputs) * 100))
+
                 try:
                     # File processing
                     results = processor.process_psarc_file(
@@ -1110,6 +1112,7 @@ class RocksmithGuitarMuteGUI:
                         processed_count += len(results)
                         for r in results:
                             self.message_queue.put(('log', f"[OK] Variant created: {r.name}"))
+                        self.message_queue.put(('progress', (processed_count / total_outputs) * 100))
                     else:
                         self.message_queue.put(('log', f"[WARN] File skipped: {psarc_file.name}"))
 
@@ -1118,14 +1121,11 @@ class RocksmithGuitarMuteGUI:
                     # Check for cancellation after error
                     if self.cancelled or self.shutdown_requested:
                         break
-                
-                # Progress update
-                self.message_queue.put(('progress', ((i + 1) / total_files) * 100))
-            
+
             # Processing completed
             if not self.cancelled and not self.shutdown_requested:
-                self.message_queue.put(('status', f"Processing completed - {processed_count}/{total_files} files processed"))
-                self.message_queue.put(('log', f"Processing completed successfully! {processed_count} file(s) processed"))
+                self.message_queue.put(('status', f"Complete! {processed_count}/{total_outputs} outputs produced"))
+                self.message_queue.put(('log', f"Processing complete! {processed_count}/{total_outputs} output file(s) produced"))
                 self.message_queue.put(('progress', 100))
             
         except Exception as e:
