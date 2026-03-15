@@ -640,8 +640,18 @@ class RocksmithGuitarMute:
 
         self.logger.info(f"Making variant unique: {original_key_mixed} -> {new_key_mixed}")
 
-        # Step 1: Update JSON manifest files
+        # Build a single PID mapping from original PID -> new PID, shared across all files.
+        # Manifest JSONs and HSAN use the same PersistentIDs to cross-reference entries.
+        # Generating them independently would break Rocksmith's lookup and cause a lockup.
         import json
+        pid_mapping = {}
+        for json_file in song_dir.rglob("*.json"):
+            data = json.loads(json_file.read_text(encoding="utf-8"))
+            for entry_id in data.get("Entries", {}):
+                if entry_id not in pid_mapping:
+                    pid_mapping[entry_id] = uuid.uuid4().hex.upper()
+
+        # Step 1: Update JSON manifest files
         for json_file in song_dir.rglob("*.json"):
             text = json_file.read_text(encoding="utf-8")
             data = json.loads(text)
@@ -650,8 +660,7 @@ class RocksmithGuitarMute:
             for entry_id, entry in data.get("Entries", {}).items():
                 attrs = entry.get("Attributes", {})
 
-                # Generate new PersistentID
-                new_pid = uuid.uuid4().hex.upper()
+                new_pid = pid_mapping.get(entry_id, uuid.uuid4().hex.upper())
 
                 if "DLCKey" in attrs:
                     attrs["DLCKey"] = new_key_mixed
@@ -664,9 +673,17 @@ class RocksmithGuitarMute:
                 if "FullName" in attrs:
                     attrs["FullName"] = attrs["FullName"].replace(original_key_mixed, new_key_mixed)
 
-                # Update all URN-style references
+                # Update .bnk path references (SongBank, PreviewBankPath use lowercase key)
+                for bank_field in ("SongBank", "PreviewBankPath"):
+                    if bank_field in attrs and isinstance(attrs[bank_field], str):
+                        attrs[bank_field] = attrs[bank_field].replace(original_key_lower, new_key_lower)
+
+                # Update URN-style references only (urn:... fields use lowercase key).
+                # Intentionally skip SongEvent — it references the Wwise event name baked
+                # into the .bnk HIRC section. Changing it would point to a non-existent
+                # event and silence the audio.
                 for key, val in attrs.items():
-                    if isinstance(val, str) and original_key_lower in val:
+                    if isinstance(val, str) and val.startswith("urn:") and original_key_lower in val:
                         attrs[key] = val.replace(original_key_lower, new_key_lower)
 
                 entry["Attributes"] = attrs
@@ -675,14 +692,15 @@ class RocksmithGuitarMute:
             data["Entries"] = new_entries
             json_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
-        # Step 2: Update HSAN files
+        # Step 2: Update HSAN files — reuse the SAME pid_mapping so PersistentIDs stay
+        # consistent with the per-arrangement manifest JSONs above.
         for hsan_file in song_dir.rglob("*.hsan"):
             text = hsan_file.read_text(encoding="utf-8")
             data = json.loads(text)
 
             new_entries = {}
             for entry_id, entry in data.get("Entries", {}).items():
-                new_pid = uuid.uuid4().hex.upper()
+                new_pid = pid_mapping.get(entry_id, uuid.uuid4().hex.upper())
                 attrs = entry.get("Attributes", {})
 
                 if "DLCKey" in attrs:
@@ -693,9 +711,15 @@ class RocksmithGuitarMute:
                     attrs["PersistentID"] = new_pid
                 if "SongName" in attrs and attrs["SongName"]:
                     attrs["SongName"] = f"{attrs['SongName']} ({variant_display})"
+                if "FullName" in attrs:
+                    attrs["FullName"] = attrs["FullName"].replace(original_key_mixed, new_key_mixed)
+
+                for bank_field in ("SongBank", "PreviewBankPath"):
+                    if bank_field in attrs and isinstance(attrs[bank_field], str):
+                        attrs[bank_field] = attrs[bank_field].replace(original_key_lower, new_key_lower)
 
                 for key, val in attrs.items():
-                    if isinstance(val, str) and original_key_lower in val:
+                    if isinstance(val, str) and val.startswith("urn:") and original_key_lower in val:
                         attrs[key] = val.replace(original_key_lower, new_key_lower)
 
                 entry["Attributes"] = attrs
@@ -705,25 +729,22 @@ class RocksmithGuitarMute:
             hsan_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
         # Step 3: Update xblock XML files (text replacement — safe for this format)
+        # Note: entity IDs (id="...") are NOT regenerated — xblock and .nt files
+        # cross-reference each other using these UUIDs. Regenerating them independently
+        # breaks those references and causes Rocksmith to hang on song select.
+        # The UUIDs are already globally unique random GUIDs; only the DLCKey needs changing.
+        import re
         for xblock_file in song_dir.rglob("*.xblock"):
             text = xblock_file.read_bytes().decode("utf-8-sig")
             text = text.replace(original_key_lower, new_key_lower)
             text = text.replace(original_key_mixed, new_key_mixed)
-            # Update entity IDs to new UUIDs
-            import re
-            def replace_entity_id(match):
-                return f'id="{uuid.uuid4().hex}"'
-            text = re.sub(r'id="[0-9a-f]{32}"', replace_entity_id, text)
             xblock_file.write_text(text, encoding="utf-8-sig")
 
         # Step 4: Update aggregategraph .nt files
+        # Note: URN UUIDs are NOT regenerated for the same reason as xblock entity IDs above.
         for nt_file in song_dir.rglob("*.nt"):
             text = nt_file.read_bytes().decode("utf-8-sig")
             text = text.replace(original_key_lower, new_key_lower)
-            # Replace UUIDs in URN references
-            def replace_urn_uuid(match):
-                return f"<urn:uuid:{uuid.uuid4()}>"
-            text = re.sub(r"<urn:uuid:[0-9a-f-]{36}>", replace_urn_uuid, text)
             nt_file.write_text(text, encoding="utf-8-sig")
 
         # Step 5: Rename files and directories containing the old key
@@ -747,7 +768,16 @@ class RocksmithGuitarMute:
         """Get the output path for a specific variant of a PSARC file."""
         suffix = VARIANT_CONFIGS[variant]["suffix"]
         stem = psarc_path.stem
-        return output_dir / f"{stem}{suffix}.psarc"
+        # Rocksmith only loads PSARCs ending in a platform suffix (_p, _m, _ps4, _xb1).
+        # Strip it, insert the variant suffix, then restore it so the file is recognized.
+        platform_suffixes = ("_p", "_m", "_ps4", "_xb1", "_ps3")
+        platform = ""
+        for ps in platform_suffixes:
+            if stem.endswith(ps):
+                stem = stem[: -len(ps)]
+                platform = ps
+                break
+        return output_dir / f"{stem}{suffix}{platform}.psarc"
 
     def _output_exists(self, psarc_path: Path, output_dir: Path, variants: Optional[list] = None) -> bool:
         """
