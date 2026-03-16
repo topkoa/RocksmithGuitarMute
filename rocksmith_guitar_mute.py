@@ -593,16 +593,20 @@ class RocksmithGuitarMute:
     
     def _make_variant_unique(self, variant_dir: Path, variant_name: str) -> None:
         """
-        Modify the extracted PSARC directory so this variant has unique identifiers,
-        allowing multiple variants to coexist in Rocksmith without collisions.
+        Build a fresh PSARC directory for this variant with correctly-named files
+        from the start, so all internal references are consistent.
 
-        Only updates identity fields (DLCKey, PersistentID, SongName) in manifest
-        JSON and HSAN files. Internal file paths, URNs, xblock, aggregategraph, and
-        filenames are left unchanged — each variant lives in its own PSARC so there
-        are no internal path collisions.
+        Instead of renaming files in-place (which breaks some tools), this method:
+        1. Reads the original extracted directory
+        2. Creates a new directory structure with the variant key in all filenames
+        3. Copies files to their new locations
+        4. Updates all metadata (manifests, HSAN, xblock, aggregategraph) with
+           consistent references matching the new filenames
+        5. Updates BNK prefetch DATA to match the remixed audio
         """
         import uuid
         import json
+        import struct
 
         config = VARIANT_CONFIGS[variant_name]
 
@@ -628,16 +632,17 @@ class RocksmithGuitarMute:
             self.logger.warning("Could not detect DLC key, skipping uniqueness")
             return
 
+        original_key_lower = original_key_mixed.lower()
         new_key_mixed = f"{original_key_mixed}{config['suffix'].title().replace('_', '')}"
+        new_key_lower = new_key_mixed.lower()
 
         # Human-readable label for SongName
         variant_display = variant_name.replace("_", " ").title()
 
         self.logger.info(f"Making variant unique: {original_key_mixed} -> {new_key_mixed}")
 
-        # Build a single PID mapping from original PID -> new PID, shared across all files.
-        # Manifest JSONs and HSAN use the same PersistentIDs to cross-reference entries.
-        # Generating them independently would break Rocksmith's lookup and cause a lockup.
+        # Build a single PID mapping from original PID -> new PID, shared across
+        # manifest JSONs and HSAN so cross-references stay consistent.
         pid_mapping = {}
         for json_file in song_dir.rglob("*.json"):
             data = json.loads(json_file.read_text(encoding="utf-8"))
@@ -645,7 +650,36 @@ class RocksmithGuitarMute:
                 if entry_id not in pid_mapping:
                     pid_mapping[entry_id] = uuid.uuid4().hex.upper()
 
-        # Step 1: Update JSON manifest files — identity fields only
+        # Create new song directory with the variant key name
+        new_song_dir = variant_dir / song_dir.name  # keep PSARC stem for Welder
+        # We'll rebuild in-place by processing each file
+
+        # Step 1: Copy all files to new locations with updated names.
+        # Build a mapping of old_relative_path -> new_relative_path
+        file_mapping = {}  # {old_path: new_path}
+        for item in sorted(song_dir.rglob("*")):
+            if not item.is_file():
+                continue
+            rel = item.relative_to(song_dir)
+            rel_str = str(rel).replace("\\", "/")
+
+            # Replace key in path components
+            new_rel_str = rel_str.replace(original_key_lower, new_key_lower)
+            file_mapping[rel] = Path(new_rel_str)
+
+        # Create a temporary new directory, copy files with new names
+        new_dir = variant_dir / f"{song_dir.name}__new"
+        for old_rel, new_rel in file_mapping.items():
+            src = song_dir / old_rel
+            dst = new_dir / new_rel
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dst)
+
+        # Replace old directory with new one
+        shutil.rmtree(song_dir)
+        new_dir.rename(song_dir)
+
+        # Step 2: Update JSON manifest files
         for json_file in song_dir.rglob("*.json"):
             data = json.loads(json_file.read_text(encoding="utf-8"))
 
@@ -662,6 +696,20 @@ class RocksmithGuitarMute:
                     attrs["PersistentID"] = new_pid
                 if "SongName" in attrs:
                     attrs["SongName"] = f"{attrs['SongName']} ({variant_display})"
+                if "FullName" in attrs:
+                    attrs["FullName"] = attrs["FullName"].replace(original_key_mixed, new_key_mixed)
+
+                # Update SongBank/PreviewBankPath to match new filenames
+                for bank_field in ("SongBank", "PreviewBankPath"):
+                    if bank_field in attrs and isinstance(attrs[bank_field], str):
+                        attrs[bank_field] = attrs[bank_field].replace(original_key_lower, new_key_lower)
+
+                # Update URN-style references to match new file paths.
+                # Skip SongEvent — it references the Wwise event name baked into the
+                # .bnk HIRC section; changing it would silence the audio.
+                for key, val in attrs.items():
+                    if isinstance(val, str) and val.startswith("urn:") and original_key_lower in val:
+                        attrs[key] = val.replace(original_key_lower, new_key_lower)
 
                 entry["Attributes"] = attrs
                 new_entries[new_pid] = entry
@@ -669,8 +717,7 @@ class RocksmithGuitarMute:
             data["Entries"] = new_entries
             json_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
-        # Step 2: Update HSAN files — reuse the SAME pid_mapping so PersistentIDs stay
-        # consistent with the per-arrangement manifest JSONs above.
+        # Step 3: Update HSAN files with same PID mapping
         for hsan_file in song_dir.rglob("*.hsan"):
             data = json.loads(hsan_file.read_text(encoding="utf-8"))
 
@@ -687,6 +734,16 @@ class RocksmithGuitarMute:
                     attrs["PersistentID"] = new_pid
                 if "SongName" in attrs and attrs["SongName"]:
                     attrs["SongName"] = f"{attrs['SongName']} ({variant_display})"
+                if "FullName" in attrs:
+                    attrs["FullName"] = attrs["FullName"].replace(original_key_mixed, new_key_mixed)
+
+                for bank_field in ("SongBank", "PreviewBankPath"):
+                    if bank_field in attrs and isinstance(attrs[bank_field], str):
+                        attrs[bank_field] = attrs[bank_field].replace(original_key_lower, new_key_lower)
+
+                for key, val in attrs.items():
+                    if isinstance(val, str) and val.startswith("urn:") and original_key_lower in val:
+                        attrs[key] = val.replace(original_key_lower, new_key_lower)
 
                 entry["Attributes"] = attrs
                 new_entries[new_pid] = entry
@@ -694,15 +751,42 @@ class RocksmithGuitarMute:
             data["Entries"] = new_entries
             hsan_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
-        # Step 3: Update BNK prefetch DATA to match the new mixed .wem content,
-        # so the first bytes Wwise plays from the prefetch buffer are the mixed
-        # audio rather than the original (which still has excluded stems).
-        import struct
+        # Step 4: Update xblock XML — references already match new filenames
+        for xblock_file in song_dir.rglob("*.xblock"):
+            text = xblock_file.read_bytes().decode("utf-8-sig")
+            text = text.replace(original_key_lower, new_key_lower)
+            text = text.replace(original_key_mixed, new_key_mixed)
+            xblock_file.write_text(text, encoding="utf-8-sig")
 
+        # Step 5: Update aggregategraph .nt — references already match new filenames
+        for nt_file in song_dir.rglob("*.nt"):
+            text = nt_file.read_bytes().decode("utf-8-sig")
+            text = text.replace(original_key_lower, new_key_lower)
+            nt_file.write_text(text, encoding="utf-8-sig")
+
+        # Step 6: Rename WEM files to new media IDs so they don't collide
+        # with the original PSARC's audio when both are loaded in Rocksmith.
+        import hashlib
+        wem_id_mapping = {}  # {old_id_str: new_id_str}
+        audio_dir = None
+        for wem_file in song_dir.rglob("*.wem"):
+            audio_dir = wem_file.parent
+            old_id = wem_file.stem
+            # Generate a deterministic new ID from the variant name + old ID
+            hash_input = f"{new_key_lower}_{old_id}".encode()
+            new_id = str(int(hashlib.md5(hash_input).hexdigest()[:8], 16))
+            wem_id_mapping[old_id] = new_id
+            new_wem_path = wem_file.parent / f"{new_id}.wem"
+            wem_file.rename(new_wem_path)
+            self.logger.info(f"Renamed WEM: {old_id}.wem -> {new_id}.wem")
+
+        # Step 7: Update BNK files — replace ALL occurrences of old media IDs
+        # (DIDX, HIRC sound objects, etc.) and update prefetch DATA.
         for bnk_file in song_dir.rglob("*.bnk"):
             bnk_data = bytearray(bnk_file.read_bytes())
 
-            didx_media = {}  # {media_id: (offset_in_data, size)}
+            # First pass: find DIDX entries and DATA section for prefetch update
+            didx_entries = []  # [(old_media_id, offset_in_data, size)]
             data_section_offset = None
             pos = 0
             while pos < len(bnk_data) - 8:
@@ -711,17 +795,43 @@ class RocksmithGuitarMute:
                 if tag == 'DIDX':
                     n_entries = chunk_len // 12
                     for i in range(n_entries):
-                        mid = struct.unpack_from('<I', bnk_data, pos+8+i*12)[0]
-                        offset = struct.unpack_from('<I', bnk_data, pos+12+i*12)[0]
-                        size = struct.unpack_from('<I', bnk_data, pos+16+i*12)[0]
-                        didx_media[mid] = (offset, size)
+                        entry_pos = pos + 8 + i * 12
+                        mid = struct.unpack_from('<I', bnk_data, entry_pos)[0]
+                        offset = struct.unpack_from('<I', bnk_data, entry_pos + 4)[0]
+                        size = struct.unpack_from('<I', bnk_data, entry_pos + 8)[0]
+                        didx_entries.append((mid, offset, size))
                 elif tag == 'DATA':
-                    data_section_offset = pos + 8  # skip tag+len
+                    data_section_offset = pos + 8
                 pos += 8 + chunk_len
 
-            if didx_media and data_section_offset is not None:
-                for media_id, (offset, size) in didx_media.items():
-                    wem_path = bnk_file.parent / f"{media_id}.wem"
+            # Binary find-and-replace of all old media IDs with new ones
+            # throughout the entire BNK (covers DIDX, HIRC, and any other refs)
+            for old_id_str, new_id_str in wem_id_mapping.items():
+                old_bytes = struct.pack('<I', int(old_id_str))
+                new_bytes = struct.pack('<I', int(new_id_str))
+                search_pos = 0
+                while True:
+                    idx = bnk_data.find(old_bytes, search_pos)
+                    if idx == -1:
+                        break
+                    # Don't replace inside the DATA section (raw audio)
+                    if data_section_offset is not None:
+                        data_end = data_section_offset
+                        for _, off, sz in didx_entries:
+                            end = data_section_offset + off + sz
+                            if end > data_end:
+                                data_end = end
+                        if data_section_offset <= idx < data_end:
+                            search_pos = idx + 4
+                            continue
+                    bnk_data[idx:idx+4] = new_bytes
+                    search_pos = idx + 4
+
+            # Update prefetch DATA from the renamed WEM files
+            if didx_entries and data_section_offset is not None:
+                for old_mid, offset, size in didx_entries:
+                    wem_id = wem_id_mapping.get(str(old_mid), str(old_mid))
+                    wem_path = bnk_file.parent / f"{wem_id}.wem"
                     if wem_path.exists():
                         new_wem_bytes = wem_path.read_bytes()
                         prefetch_bytes = new_wem_bytes[:size]
