@@ -596,13 +596,15 @@ class RocksmithGuitarMute:
         Modify the extracted PSARC directory so this variant has unique identifiers,
         allowing multiple variants to coexist in Rocksmith without collisions.
 
-        Updates DLCKey, PersistentIDs, SongName, file/directory names, URNs,
-        and all references across manifest JSON, HSAN, xblock, and aggregategraph files.
+        Only updates identity fields (DLCKey, PersistentID, SongName) in manifest
+        JSON and HSAN files. Internal file paths, URNs, xblock, aggregategraph, and
+        filenames are left unchanged — each variant lives in its own PSARC so there
+        are no internal path collisions.
         """
         import uuid
+        import json
 
         config = VARIANT_CONFIGS[variant_name]
-        variant_label = config["suffix"].lstrip("_")  # e.g. "no_guitar"
 
         # Find the top-level song directory (there should be exactly one)
         song_dirs = [d for d in variant_dir.iterdir() if d.is_dir()]
@@ -611,29 +613,22 @@ class RocksmithGuitarMute:
             return
         song_dir = song_dirs[0]
 
-        # Detect the original DLC key from directory/file naming
-        # The DLC key appears in lowercase in paths, mixed case in JSON fields
-        original_key_lower = None
+        # Detect the original DLC key from manifest JSON
         original_key_mixed = None
-
-        # Find from manifest JSON files
         manifest_files = list(song_dir.rglob("*.json"))
         if manifest_files:
-            import json
             data = json.loads(manifest_files[0].read_text(encoding="utf-8"))
             for entry in data.get("Entries", {}).values():
                 attrs = entry.get("Attributes", {})
                 if "DLCKey" in attrs:
                     original_key_mixed = attrs["DLCKey"]
-                    original_key_lower = original_key_mixed.lower()
                     break
 
-        if not original_key_lower:
+        if not original_key_mixed:
             self.logger.warning("Could not detect DLC key, skipping uniqueness")
             return
 
         new_key_mixed = f"{original_key_mixed}{config['suffix'].title().replace('_', '')}"
-        new_key_lower = new_key_mixed.lower()
 
         # Human-readable label for SongName
         variant_display = variant_name.replace("_", " ").title()
@@ -643,7 +638,6 @@ class RocksmithGuitarMute:
         # Build a single PID mapping from original PID -> new PID, shared across all files.
         # Manifest JSONs and HSAN use the same PersistentIDs to cross-reference entries.
         # Generating them independently would break Rocksmith's lookup and cause a lockup.
-        import json
         pid_mapping = {}
         for json_file in song_dir.rglob("*.json"):
             data = json.loads(json_file.read_text(encoding="utf-8"))
@@ -651,15 +645,13 @@ class RocksmithGuitarMute:
                 if entry_id not in pid_mapping:
                     pid_mapping[entry_id] = uuid.uuid4().hex.upper()
 
-        # Step 1: Update JSON manifest files
+        # Step 1: Update JSON manifest files — identity fields only
         for json_file in song_dir.rglob("*.json"):
-            text = json_file.read_text(encoding="utf-8")
-            data = json.loads(text)
+            data = json.loads(json_file.read_text(encoding="utf-8"))
 
             new_entries = {}
             for entry_id, entry in data.get("Entries", {}).items():
                 attrs = entry.get("Attributes", {})
-
                 new_pid = pid_mapping.get(entry_id, uuid.uuid4().hex.upper())
 
                 if "DLCKey" in attrs:
@@ -670,21 +662,6 @@ class RocksmithGuitarMute:
                     attrs["PersistentID"] = new_pid
                 if "SongName" in attrs:
                     attrs["SongName"] = f"{attrs['SongName']} ({variant_display})"
-                if "FullName" in attrs:
-                    attrs["FullName"] = attrs["FullName"].replace(original_key_mixed, new_key_mixed)
-
-                # Update .bnk path references (SongBank, PreviewBankPath use lowercase key)
-                for bank_field in ("SongBank", "PreviewBankPath"):
-                    if bank_field in attrs and isinstance(attrs[bank_field], str):
-                        attrs[bank_field] = attrs[bank_field].replace(original_key_lower, new_key_lower)
-
-                # Update URN-style references only (urn:... fields use lowercase key).
-                # Intentionally skip SongEvent — it references the Wwise event name baked
-                # into the .bnk HIRC section. Changing it would point to a non-existent
-                # event and silence the audio.
-                for key, val in attrs.items():
-                    if isinstance(val, str) and val.startswith("urn:") and original_key_lower in val:
-                        attrs[key] = val.replace(original_key_lower, new_key_lower)
 
                 entry["Attributes"] = attrs
                 new_entries[new_pid] = entry
@@ -695,8 +672,7 @@ class RocksmithGuitarMute:
         # Step 2: Update HSAN files — reuse the SAME pid_mapping so PersistentIDs stay
         # consistent with the per-arrangement manifest JSONs above.
         for hsan_file in song_dir.rglob("*.hsan"):
-            text = hsan_file.read_text(encoding="utf-8")
-            data = json.loads(text)
+            data = json.loads(hsan_file.read_text(encoding="utf-8"))
 
             new_entries = {}
             for entry_id, entry in data.get("Entries", {}).items():
@@ -711,16 +687,6 @@ class RocksmithGuitarMute:
                     attrs["PersistentID"] = new_pid
                 if "SongName" in attrs and attrs["SongName"]:
                     attrs["SongName"] = f"{attrs['SongName']} ({variant_display})"
-                if "FullName" in attrs:
-                    attrs["FullName"] = attrs["FullName"].replace(original_key_mixed, new_key_mixed)
-
-                for bank_field in ("SongBank", "PreviewBankPath"):
-                    if bank_field in attrs and isinstance(attrs[bank_field], str):
-                        attrs[bank_field] = attrs[bank_field].replace(original_key_lower, new_key_lower)
-
-                for key, val in attrs.items():
-                    if isinstance(val, str) and val.startswith("urn:") and original_key_lower in val:
-                        attrs[key] = val.replace(original_key_lower, new_key_lower)
 
                 entry["Attributes"] = attrs
                 new_entries[new_pid] = entry
@@ -728,58 +694,14 @@ class RocksmithGuitarMute:
             data["Entries"] = new_entries
             hsan_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
-        # Step 3: Update xblock XML files (text replacement — safe for this format)
-        # Note: entity IDs (id="...") are NOT regenerated — xblock and .nt files
-        # cross-reference each other using these UUIDs. Regenerating them independently
-        # breaks those references and causes Rocksmith to hang on song select.
-        # The UUIDs are already globally unique random GUIDs; only the DLCKey needs changing.
-        import re
-        for xblock_file in song_dir.rglob("*.xblock"):
-            text = xblock_file.read_bytes().decode("utf-8-sig")
-            text = text.replace(original_key_lower, new_key_lower)
-            text = text.replace(original_key_mixed, new_key_mixed)
-            xblock_file.write_text(text, encoding="utf-8-sig")
-
-        # Step 4: Update aggregategraph .nt files
-        # Note: URN UUIDs are NOT regenerated for the same reason as xblock entity IDs above.
-        for nt_file in song_dir.rglob("*.nt"):
-            text = nt_file.read_bytes().decode("utf-8-sig")
-            text = text.replace(original_key_lower, new_key_lower)
-            nt_file.write_text(text, encoding="utf-8-sig")
-
-        # Step 5: Rename files and directories containing the old key
-        # Do directories first (deepest first to avoid path conflicts)
-        for item in sorted(song_dir.rglob("*"), key=lambda p: len(p.parts), reverse=True):
-            if original_key_lower in item.name:
-                new_name = item.name.replace(original_key_lower, new_key_lower)
-                item.rename(item.parent / new_name)
-
-        # Rename the top-level song directory itself
-        if original_key_lower in song_dir.name.lower():
-            new_song_dir_name = song_dir.name.replace(
-                song_dir.name,
-                song_dir.name  # Keep the PSARC stem name as-is for Welder compatibility
-            )
-            # The Welder uses the directory name as the PSARC name, so we don't rename it
-
-        # Step 6: Patch .bnk files
-        # a) Update the prefetch DATA section to match the new mixed .wem content, so
-        #    the first bytes Wwise plays from the prefetch buffer are the mixed audio
-        #    rather than the original (which still has excluded stems).
-        # b) Update the preview bank's HIRC event ID. Rocksmith derives the preview event
-        #    name as Play_{DLCKey}_Preview, so we recompute its FNV-1 hash for the new key.
+        # Step 3: Update BNK prefetch DATA to match the new mixed .wem content,
+        # so the first bytes Wwise plays from the prefetch buffer are the mixed
+        # audio rather than the original (which still has excluded stems).
         import struct
-
-        def wwise_fnv1(s: str) -> int:
-            h = 2166136261
-            for c in s.lower():
-                h = ((h * 16777619) ^ ord(c)) & 0xFFFFFFFF
-            return h
 
         for bnk_file in song_dir.rglob("*.bnk"):
             bnk_data = bytearray(bnk_file.read_bytes())
 
-            # a) Update embedded prefetch DATA to match first bytes of new mixed .wem
             didx_media = {}  # {media_id: (offset_in_data, size)}
             data_section_offset = None
             pos = 0
@@ -806,29 +728,6 @@ class RocksmithGuitarMute:
                         if len(prefetch_bytes) == size:
                             start = data_section_offset + offset
                             bnk_data[start:start+size] = prefetch_bytes
-
-            # b) Update preview bank HIRC event ID
-            if "_preview" in bnk_file.name:
-                old_event_id = wwise_fnv1(f"Play_{original_key_mixed}_Preview")
-                new_event_id = wwise_fnv1(f"Play_{new_key_mixed}_Preview")
-                pos = 0
-                while pos < len(bnk_data) - 8:
-                    tag = bnk_data[pos:pos+4].decode('ascii', errors='replace')
-                    chunk_len = struct.unpack_from('<I', bnk_data, pos+4)[0]
-                    if tag == 'HIRC':
-                        n = struct.unpack_from('<I', bnk_data, pos+8)[0]
-                        opos = pos + 12
-                        for _ in range(n):
-                            obj_type = bnk_data[opos]
-                            obj_len = struct.unpack_from('<I', bnk_data, opos+1)[0]
-                            obj_id = struct.unpack_from('<I', bnk_data, opos+5)[0]
-                            if obj_type == 4 and obj_id == old_event_id:
-                                struct.pack_into('<I', bnk_data, opos+5, new_event_id)
-                                self.logger.debug(
-                                    f"Updated preview event ID: 0x{old_event_id:08x} -> 0x{new_event_id:08x}"
-                                )
-                            opos += 5 + obj_len
-                    pos += 8 + chunk_len
 
             bnk_file.write_bytes(bytes(bnk_data))
 
